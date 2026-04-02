@@ -2,7 +2,7 @@
 
 > Tiered KV Cache Compression for Edge LLMs — up to 65% RAM reduction with <0.5% accuracy loss on consumer hardware.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1-orange.svg)](LICENSE)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/)
 [![Tests: 52 passing](https://img.shields.io/badge/tests-52%20passing-brightgreen.svg)]()
 [![Status: Research Prototype](https://img.shields.io/badge/status-research%20prototype-orange.svg)]()
@@ -168,7 +168,13 @@ Open an issue before submitting a large PR.
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for details.
+**Business Source License 1.1 (BSL 1.1)**
+
+- **Free** for non-commercial use, personal use, academic research, and open source projects
+- **Commercial license required** for production use in commercial products or hosted services competing with WeSecure
+- **Converts to Apache 2.0** on January 1, 2029
+
+See [LICENSE](LICENSE) for full terms.
 
 ---
 
