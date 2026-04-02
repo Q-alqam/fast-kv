@@ -162,7 +162,7 @@ This is an early-stage research project. Contributions welcome — especially:
 - Per-model calibration benchmarks
 - Rust port contributions
 
-Open an issue before submitting a large PR.
+Open an issue before submitting a large PR. For commercial licensing inquiries, contact **Qais@wesecure.ca**.
 
 ---
 
@@ -174,7 +174,7 @@ Open an issue before submitting a large PR.
 - **Commercial license required** for production use in commercial products or hosted services competing with WeSecure
 - **Converts to Apache 2.0** on January 1, 2029
 
-See [LICENSE](LICENSE) for full terms.
+See [LICENSE](LICENSE) for full terms. For commercial licensing, contact **Qais@wesecure.ca**.
 
 ---
 
