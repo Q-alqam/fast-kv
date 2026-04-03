@@ -14,6 +14,7 @@ from fast_kv.compression import (
     compute_residual,
     dequantize_vector,
     quantize_vector,
+    quantize_vector_outlier_aware,
 )
 from fast_kv.config import FastKVConfig
 from fast_kv.importance_scorer import ImportanceScoringEngine
@@ -90,7 +91,17 @@ class TierManager:
             score: Current importance score (determines sub-tier).
         """
         sub_tier, bits = self._assign_sub_tier(score)
-        quantized = quantize_vector(kv_vector, bits)
+
+        # Use outlier-aware quantization if enabled
+        if self.config.use_outlier_aware:
+            sigma = {
+                "2A": self.config.outlier_sigma_2a,
+                "2B": self.config.outlier_sigma_2b,
+                "2C": self.config.outlier_sigma_2c,
+            }.get(sub_tier, 3.0)
+            quantized = quantize_vector_outlier_aware(kv_vector, bits, sigma)
+        else:
+            quantized = quantize_vector(kv_vector, bits)
 
         entry: Dict = {
             "quantized": quantized,
@@ -304,7 +315,16 @@ class TierManager:
             else:
                 bits = self.config.bits_subtier_2c
                 residual_overhead = 0
-            ram_cold += self.kv_dim * bits / 8 + 8 + residual_overhead  # +8 for scale/zp
+            # Account for outlier storage overhead
+            n_outliers = entry["quantized"].get("outlier_count", 0)
+            outlier_bytes = n_outliers * 8  # 4 bytes index + 4 bytes value
+            ram_cold += self.kv_dim * bits / 8 + 8 + residual_overhead + outlier_bytes
+
+        # Count total outliers across cold cache
+        total_outliers = sum(
+            e["quantized"].get("outlier_count", 0)
+            for e in self.cold_cache.values()
+        )
 
         hot_fraction = n_hot / n_total if n_total > 0 else 0.0
         total_fkv = ram_hot + ram_cold
@@ -323,4 +343,6 @@ class TierManager:
             "n_promotions_total": self.n_promotions_total,
             "n_demotions_total": self.n_demotions_total,
             "subtier_counts": dict(self._subtier_counts),
+            "total_outliers_stored": total_outliers,
+            "avg_outliers_per_token": total_outliers / n_cold if n_cold > 0 else 0.0,
         }

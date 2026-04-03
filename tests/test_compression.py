@@ -8,8 +8,10 @@ from fast_kv.compression import (
     benchmark_compression,
     compression_ratio,
     compute_residual,
+    detect_outliers,
     dequantize_vector,
     quantize_vector,
+    quantize_vector_outlier_aware,
 )
 
 
@@ -148,3 +150,71 @@ class TestBenchmarkCompression:
         }
         for bits, metrics in results.items():
             assert set(metrics.keys()) == expected_keys
+
+
+class TestOutlierDetection:
+    """Tests for outlier detection and outlier-aware quantization."""
+
+    def test_detect_outliers_finds_clear_outliers(self):
+        """Should detect obvious outliers in a vector."""
+        np.random.seed(42)
+        # Need enough normal values so the outlier is statistically extreme
+        vector = np.random.randn(100).astype(np.float32) * 0.3
+        vector[42] = 500.0  # Clear outlier at index 42
+        result = detect_outliers(vector)
+        assert 42 in result["outlier_indices"]
+        assert len(result["outlier_values"]) > 0
+
+    def test_detect_outliers_clean_vector(self):
+        """Clean normal vectors should have no outliers."""
+        np.random.seed(99)
+        vector = np.random.randn(1024).astype(np.float32) * 0.5
+        result = detect_outliers(vector)
+        # With 3-sigma threshold, ~0.3% chance per element; a few might trigger
+        # but it should be very few
+        assert len(result["outlier_indices"]) < 20
+
+    def test_outlier_aware_better_mae_than_standard(self):
+        """Outlier-aware quantization must have lower MAE with outliers present."""
+        np.random.seed(42)
+        vector = np.random.randn(1024).astype(np.float32) * 0.3
+        vector[42] = 500.0
+        vector[300] = -480.0
+
+        standard = quantize_vector(vector, 4)
+        outlier_aware = quantize_vector_outlier_aware(vector, 4)
+
+        std_recon = dequantize_vector(standard)
+        oa_recon = dequantize_vector(outlier_aware)
+
+        std_mae = np.abs(vector - std_recon).mean()
+        oa_mae = np.abs(vector - oa_recon).mean()
+
+        assert oa_mae < std_mae
+
+    def test_outlier_aware_perfect_outlier_reconstruction(self):
+        """Outlier values must be perfectly reconstructed."""
+        np.random.seed(42)
+        vector = np.random.randn(512).astype(np.float32)
+        vector[10] = 999.0
+
+        compressed = quantize_vector_outlier_aware(vector, 4)
+        reconstructed = dequantize_vector(compressed)
+
+        assert abs(reconstructed[10] - 999.0) < 0.001
+
+    def test_backward_compatibility(self):
+        """Old format without outlier fields must still dequantize."""
+        np.random.seed(42)
+        vector = np.random.randn(256).astype(np.float32)
+        old_format = quantize_vector(vector, 4)
+        reconstructed = dequantize_vector(old_format)
+        assert reconstructed.shape == vector.shape
+
+    def test_outlier_aware_roundtrip_no_outliers(self):
+        """Uniform vector with no extreme values should produce has_outliers=False."""
+        # Use uniform distribution to avoid any sigma-based outliers
+        np.random.seed(42)
+        vector = np.random.uniform(-0.1, 0.1, size=256).astype(np.float32)
+        result = quantize_vector_outlier_aware(vector, 4, threshold_sigma=4.0)
+        assert result["has_outliers"] is False

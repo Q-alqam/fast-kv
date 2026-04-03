@@ -2,11 +2,14 @@
 
 Implements uniform scalar quantization at arbitrary bit widths (1, 2, 4, 8, 16, 32)
 with optional residual error storage for high-accuracy reconstruction.
+
+Includes outlier-aware quantization that detects and stores outlier values
+separately to prevent them from stretching the quantization scale.
 """
 
 import logging
 import time
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -108,6 +111,98 @@ def quantize_vector(vector: np.ndarray, bits: int) -> Dict:
     return result
 
 
+# ---------------------------------------------------------------------------
+# Outlier-aware quantization
+# ---------------------------------------------------------------------------
+
+
+def detect_outliers(
+    vector: np.ndarray, threshold_sigma: float = 3.0
+) -> Dict:
+    """Detect outlier values in a vector using sigma thresholding.
+
+    A value is an outlier if it lies more than threshold_sigma standard
+    deviations from the mean.
+
+    Args:
+        vector: Input float32 vector.
+        threshold_sigma: Number of standard deviations for the cutoff.
+
+    Returns:
+        Dictionary with:
+            'outlier_indices': list of int indices of outlier values.
+            'outlier_values': list of float outlier values.
+            'normal_mask': boolean np.ndarray (True for normal values).
+    """
+    mean = float(vector.mean())
+    std = float(vector.std())
+
+    if std < 1e-10:
+        return {
+            "outlier_indices": [],
+            "outlier_values": [],
+            "normal_mask": np.ones(len(vector), dtype=bool),
+        }
+
+    deviation = np.abs(vector - mean)
+    outlier_mask = deviation > threshold_sigma * std
+    indices = np.where(outlier_mask)[0].tolist()
+    values = vector[outlier_mask].tolist()
+
+    return {
+        "outlier_indices": indices,
+        "outlier_values": values,
+        "normal_mask": ~outlier_mask,
+    }
+
+
+def quantize_vector_outlier_aware(
+    vector: np.ndarray, bits: int, threshold_sigma: float = 3.0
+) -> Dict:
+    """Quantize a vector with outlier-aware handling.
+
+    Detects outliers, stores them separately at full precision, and
+    quantizes the remaining normal values with a tighter scale.
+
+    Args:
+        vector: Input float32 vector.
+        bits: Target bit width.
+        threshold_sigma: Sigma threshold for outlier detection.
+
+    Returns:
+        Extended quantized dict with outlier information.
+    """
+    outlier_info = detect_outliers(vector, threshold_sigma)
+    outlier_indices = outlier_info["outlier_indices"]
+
+    if not outlier_indices:
+        # No outliers — use standard quantization, mark as clean
+        result = quantize_vector(vector, bits)
+        result["has_outliers"] = False
+        result["outliers"] = []
+        result["outlier_count"] = 0
+        result["vector_length"] = len(vector)
+        return result
+
+    # Zero out outlier positions and quantize the rest
+    clean_vector = vector.copy()
+    clean_vector[outlier_indices] = 0.0
+
+    # Compute scale from normal values only for better precision
+    normal_mask = outlier_info["normal_mask"]
+    normal_vals = vector[normal_mask]
+    if len(normal_vals) > 0:
+        clean_vector[outlier_indices] = float(normal_vals.mean())
+
+    result = quantize_vector(clean_vector, bits)
+    result["has_outliers"] = True
+    result["outliers"] = list(zip(outlier_indices, outlier_info["outlier_values"]))
+    result["outlier_count"] = len(outlier_indices)
+    result["vector_length"] = len(vector)
+
+    return result
+
+
 def dequantize_vector(quantized_data: Dict) -> np.ndarray:
     """Dequantize a previously quantized vector back to float32.
 
@@ -152,7 +247,17 @@ def dequantize_vector(quantized_data: Dict) -> np.ndarray:
         unpacked = quantized_data["quantized"].astype(np.float32)
 
     restored = unpacked * scale + zero_point
-    return restored.reshape(shape)
+    restored = restored.reshape(shape)
+
+    # Restore outlier values if present
+    if quantized_data.get("has_outliers") and quantized_data.get("outliers"):
+        flat = restored.flatten()
+        for idx, val in quantized_data["outliers"]:
+            if idx < len(flat):
+                flat[idx] = val
+        restored = flat.reshape(shape)
+
+    return restored
 
 
 def compute_residual(
@@ -243,3 +348,45 @@ def benchmark_compression(vector: np.ndarray) -> Dict:
             "time_to_decompress": t_decompress,
         }
     return results
+
+
+def benchmark_outlier_aware(vector: np.ndarray, bits: int = 4) -> Dict:
+    """Compare standard vs outlier-aware quantization on a single vector.
+
+    Args:
+        vector: Input float32 vector (ideally one with outliers).
+        bits: Bit width to test.
+
+    Returns:
+        Comparison dict with MAE, improvement, and outlier stats.
+    """
+    # Standard
+    std_q = quantize_vector(vector, bits)
+    std_r = dequantize_vector(std_q)
+    std_mae = float(np.abs(vector - std_r).mean())
+
+    # Outlier-aware
+    oa_q = quantize_vector_outlier_aware(vector, bits)
+    oa_r = dequantize_vector(oa_q)
+    oa_mae = float(np.abs(vector - oa_r).mean())
+
+    improvement = ((std_mae - oa_mae) / std_mae * 100) if std_mae > 0 else 0.0
+
+    # Effective compression ratio accounting for outlier storage overhead
+    n = len(vector)
+    n_outliers = oa_q.get("outlier_count", 0)
+    # Outliers cost 4 bytes (float32) + 4 bytes (index) = 8 bytes each
+    outlier_bytes = n_outliers * 8
+    compressed_bits = n * bits + outlier_bytes * 8
+    original_bits = n * 32
+    oa_cr = original_bits / compressed_bits if compressed_bits > 0 else 1.0
+
+    return {
+        "standard_mae": std_mae,
+        "outlier_aware_mae": oa_mae,
+        "improvement_percent": improvement,
+        "outlier_count": n_outliers,
+        "outlier_percent": n_outliers / n * 100 if n > 0 else 0,
+        "compression_ratio_standard": 32.0 / bits,
+        "compression_ratio_outlier_aware": oa_cr,
+    }

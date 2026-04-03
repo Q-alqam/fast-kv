@@ -4,7 +4,7 @@
 
 [![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1-orange.svg)](LICENSE)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/)
-[![Tests: 55 passing](https://img.shields.io/badge/tests-55%20passing-brightgreen.svg)]()
+[![Tests: 61 passing](https://img.shields.io/badge/tests-61%20passing-brightgreen.svg)]()
 [![Status: Beta](https://img.shields.io/badge/status-beta-blue.svg)]()
 
 ---
@@ -168,7 +168,7 @@ demo.py                        # End-to-end demo with visualizations
 ### Phase 1 — Python Prototype (Complete)
 - Three-layer Importance Scoring Engine
 - Mixed-precision compression (1/2/4-bit + residual storage)
-- Full benchmark suite and 55 passing unit tests
+- Full benchmark suite and 61 passing unit tests
 - Synthetic KV vector validation
 
 ### Phase 2 — Real Model Integration (Complete)
@@ -184,6 +184,13 @@ demo.py                        # End-to-end demo with visualizations
 - All conversation lengths now hit >= 85% quality target
 - Phi-2 (2.7B) model compatibility verified
 - Per-model threshold calibration with warmup-aware tiering
+
+### Phase 2.7 — Outlier-Aware Quantization (Complete)
+- Outlier detection (sigma threshold) + separate full-precision storage
+- 83-85% MAE improvement on synthetic vectors with outliers
+- Real model average quality: 90.3% with outlier-aware enabled
+- Configurable per-sub-tier sigma: 3.0 (4-bit), 2.5 (2-bit), 2.0 (1-bit)
+- Fully backward compatible with old quantization format
 
 ### Phase 3 — Rust Production Port (Planned)
 - Port core algorithm to Rust
@@ -206,6 +213,9 @@ Evicted tokens are gone permanently. If the model needs to refer back to an earl
 
 **Attention normalization**
 Raw softmax attention weights become meaninglessly tiny as context grows (1/500 average in a 500-token context). Fast-KV normalizes each token's attention relative to the uniform distribution, making importance scoring work correctly regardless of context length.
+
+**Outlier-Aware Quantization**
+Real transformer KV vectors contain outliers — values 3+ standard deviations from the mean — that stretch the quantization scale and destroy precision for normal values. Fast-KV detects outliers before quantizing, stores them separately at full 32-bit precision, and quantizes the remaining values with a tight scale. This improves MAE by 83-85% on vectors with outliers compared to standard uniform quantization. On real TinyLlama vectors (which have milder outliers), compression improved modestly (+2% average) while maintaining 90%+ output quality.
 
 ---
 

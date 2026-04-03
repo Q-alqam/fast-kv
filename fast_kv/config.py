@@ -65,6 +65,12 @@ class FastKVConfig:
     # Warmup period
     warmup_steps: int = 50  # All tokens stay in Tier 1 during warmup
 
+    # Outlier-aware quantization
+    use_outlier_aware: bool = True    # Master toggle for outlier detection
+    outlier_sigma_2a: float = 3.0    # Outlier threshold for 4-bit sub-tier
+    outlier_sigma_2b: float = 2.5    # Outlier threshold for 2-bit sub-tier
+    outlier_sigma_2c: float = 2.0    # Outlier threshold for 1-bit sub-tier
+
     def __post_init__(self) -> None:
         """Validate configuration parameters."""
         weight_sum = self.w_static + self.w_attention + self.w_recency
