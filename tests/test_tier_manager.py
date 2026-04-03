@@ -10,7 +10,7 @@ from fast_kv.tier_manager import TierManager
 
 @pytest.fixture
 def config():
-    return FastKVConfig()
+    return FastKVConfig(warmup_steps=0)
 
 
 @pytest.fixture
@@ -186,3 +186,64 @@ class TestStats:
         assert "estimated_ram_hot_mb" in stats
         assert "estimated_ram_cold_mb" in stats
         assert "compression_ratio" in stats
+
+
+class TestWarmup:
+    """Tests for the warmup period feature."""
+
+    def test_warmup_all_tokens_stay_hot(self):
+        """During warmup, ALL tokens must be in hot tier regardless of score."""
+        cfg = FastKVConfig(warmup_steps=20)
+        ise = ImportanceScoringEngine(cfg)
+        tm = TierManager(cfg, ise, kv_dim=256)
+
+        # Add stopwords during warmup — they should still be hot
+        for i in range(10):
+            ise.register_token(i, "the")
+            ise.update_attention_scores({i: 0.0}, current_step=i)
+            tier = tm.add_token(i, make_kv(), "the", layer_id=0, current_step=i)
+            assert tier == "hot", f"Token {i} should be hot during warmup"
+            assert i in tm.hot_cache
+
+        assert len(tm.cold_cache) == 0
+
+    def test_warmup_ends_correctly(self):
+        """After warmup_steps, normal tiering resumes and stopwords get demoted."""
+        cfg = FastKVConfig(warmup_steps=5)
+        ise = ImportanceScoringEngine(cfg)
+        tm = TierManager(cfg, ise, kv_dim=256)
+
+        # Add token during warmup
+        ise.register_token(0, "the")
+        ise.update_attention_scores({0: 0.0}, current_step=0)
+        tier = tm.add_token(0, make_kv(), "the", layer_id=0, current_step=0)
+        assert tier == "hot"
+
+        # Decay attention
+        for step in range(1, 50):
+            ise.update_attention_scores({0: 0.0}, current_step=step)
+
+        # Check demotions after warmup ends — should now demote
+        demoted = tm.check_demotions(current_step=50)
+        assert 0 in demoted
+        assert tm.token_tiers[0] == "cold"
+
+        # New stopword added after warmup should go to cold
+        ise.register_token(1, "and")
+        for step in range(50, 60):
+            ise.update_attention_scores({1: 0.0}, current_step=step)
+        tier = tm.add_token(1, make_kv(), "and", layer_id=0, current_step=60)
+        assert tier == "cold"
+
+    def test_warmup_zero_disables(self):
+        """warmup_steps=0 disables warmup — stopwords go cold immediately."""
+        cfg = FastKVConfig(warmup_steps=0)
+        ise = ImportanceScoringEngine(cfg)
+        tm = TierManager(cfg, ise, kv_dim=256)
+
+        ise.register_token(0, "the")
+        for step in range(5):
+            ise.update_attention_scores({0: 0.0}, current_step=step)
+        tier = tm.add_token(0, make_kv(), "the", layer_id=0, current_step=5)
+        assert tier == "cold"
+        assert 0 in tm.cold_cache

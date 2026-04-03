@@ -58,6 +58,10 @@ class TierManager:
         self.n_promotions_total: int = 0
         self.n_demotions_total: int = 0
 
+        # Warmup tracking
+        self._current_step: int = 0
+        self._warmup_complete: bool = config.warmup_steps <= 0
+
     def _assign_sub_tier(self, score: float) -> Tuple[str, int]:
         """Determine the cold sub-tier and bit width based on importance score.
 
@@ -131,6 +135,16 @@ class TierManager:
         self.ise.register_token(token_id, token_text)
         score = self.ise.get_score(token_id, current_step)
 
+        # During warmup, force all tokens to hot tier
+        if current_step < self.config.warmup_steps:
+            self.hot_cache[token_id] = {"kv": kv_vector.copy(), "layer": layer_id}
+            self.token_tiers[token_id] = "hot"
+            logger.debug(
+                "Token %d ('%s') -> HOT (warmup, score=%.3f)",
+                token_id, token_text, score,
+            )
+            return "hot"
+
         if score >= self.config.hot_threshold:
             self.hot_cache[token_id] = {"kv": kv_vector.copy(), "layer": layer_id}
             self.token_tiers[token_id] = "hot"
@@ -150,6 +164,7 @@ class TierManager:
         """Check all hot tokens for demotion to cold tier.
 
         Called every demotion_check_every_n_steps inference steps.
+        Skipped entirely during warmup period.
 
         Args:
             current_step: Current inference step.
@@ -157,6 +172,20 @@ class TierManager:
         Returns:
             List of token_ids that were demoted.
         """
+        self._current_step = current_step
+
+        # Skip demotions during warmup
+        if current_step < self.config.warmup_steps:
+            return []
+
+        # Log warmup completion once
+        if not self._warmup_complete:
+            self._warmup_complete = True
+            logger.info(
+                "Fast-KV warmup complete at step %d, tiering now active",
+                current_step,
+            )
+
         demoted = []
         # Iterate over a copy of keys since we modify the dict
         for token_id in list(self.hot_cache.keys()):

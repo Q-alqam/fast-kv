@@ -62,6 +62,9 @@ class FastKVConfig:
     # Hot tier target size
     hot_tier_max_fraction: float = 0.25
 
+    # Warmup period
+    warmup_steps: int = 50  # All tokens stay in Tier 1 during warmup
+
     def __post_init__(self) -> None:
         """Validate configuration parameters."""
         weight_sum = self.w_static + self.w_attention + self.w_recency

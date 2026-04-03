@@ -117,6 +117,20 @@ class FastKVCache:
         values = kv_matrix[:, self.kv_dim :]
         return keys, values
 
+    def get_warmup_status(self) -> Dict:
+        """Return the current warmup status.
+
+        Returns:
+            Dictionary with 'in_warmup', 'steps_remaining', 'warmup_steps'.
+        """
+        in_warmup = self._current_step < self.config.warmup_steps
+        remaining = max(0, self.config.warmup_steps - self._current_step)
+        return {
+            "in_warmup": in_warmup,
+            "steps_remaining": remaining,
+            "warmup_steps": self.config.warmup_steps,
+        }
+
     def reset(self) -> None:
         """Clear all caches and reset ISE state for a new conversation."""
         self.ise.reset()
@@ -127,6 +141,8 @@ class FastKVCache:
             tm._subtier_counts = {"2A": 0, "2B": 0, "2C": 0}
             tm.n_promotions_total = 0
             tm.n_demotions_total = 0
+            tm._current_step = 0
+            tm._warmup_complete = self.config.warmup_steps <= 0
         self._current_step = 0
         logger.info("Fast-KV cache reset")
 

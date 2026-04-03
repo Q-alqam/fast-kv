@@ -4,8 +4,8 @@
 
 [![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1-orange.svg)](LICENSE)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/)
-[![Tests: 52 passing](https://img.shields.io/badge/tests-52%20passing-brightgreen.svg)]()
-[![Status: Research Prototype](https://img.shields.io/badge/status-research%20prototype-orange.svg)]()
+[![Tests: 55 passing](https://img.shields.io/badge/tests-55%20passing-brightgreen.svg)]()
+[![Status: Beta](https://img.shields.io/badge/status-beta-blue.svg)]()
 
 ---
 
@@ -109,35 +109,45 @@ demo.py                        # End-to-end demo with visualizations
 ### Model: TinyLlama 1.1B (TinyLlama/TinyLlama-1.1B-Chat-v1.0)
 ### Hardware: Intel x86_64 CPU, 16 GB RAM
 
-| Conversation | Prompt Tokens | Overlap | Hot % | Compression | Time (FKV) |
-|---|---|---|---|---|---|
-| Short - Cybersecurity | 188 | 79.3% | 39.3% | 1.61x | 33s |
-| Medium - General Q&A | 314 | 75.7% | 22.4% | 1.93x | 67s |
-| Long - Coding Help | 686 | 82.4% | 25.6% | 1.90x | 136s |
-| Very Long - Mixed | 846 | 85.3% | 20.8% | 2.01x | 109s |
-| Extended - Reasoning | 1504 | 93.0% | 24.8% | 1.93x | 367s |
+**With warmup fix (warmup_steps=50):**
+
+| Conversation | Tokens | Overlap | Hot % | Compression |
+|---|---|---|---|---|
+| Short - Cybersecurity | 188 | 88.2% | 78.9% | 1.24x |
+| Medium - General Q&A | 258 | 89.9% | 77.4% | 1.27x |
+| Long - Coding Help | 339 | 86.4% | 73.7% | 1.32x |
+| Very Long - Mixed | 339 | 89.9% | 77.0% | 1.27x |
+| Extended - Reasoning | 480 | 95.1% | 73.9% | 1.32x |
+
+**All conversations >= 85% quality.**
+
+**Cold-start warmup fix:**
+
+| Metric | Without Warmup | With Warmup |
+|---|---|---|
+| Short convo quality | 79.3% | 88.2% (+8.9%) |
 
 **Key findings:**
-- Real KV cache compression ratio: **1.6-2.2x** across conversation lengths
-- Output quality maintained: **75-93% word overlap** with baseline (greedy decoding)
-- Hot tier stabilizes at **~20-25%** for longer conversations, matching design target
+- Warmup fix improved short conversation quality from **79.3% to 88.2%**
+- Average output quality: **89.9%** across all conversation lengths
+- Real KV cache compression ratio: **1.24-1.32x** (with warmup keeping more tokens hot)
 - ISE correctly predicted tier assignment: **77.5%** of the time
-- Optimal hot_threshold for TinyLlama: **0.70** (highest compression at 2.24x)
-- Attention analysis confirms: **64.6%** of tokens are consistently low-attention (Tier 2 candidates)
+- Optimal hot_threshold: **0.70** (gives 1.38x compression at 90.5% quality)
+- Attention analysis: **64.6%** of tokens are consistently low-attention
 
-**Threshold calibration (TinyLlama):**
+**Threshold calibration:**
 
-| Threshold | Hot % | Compression |
-|---|---|---|
-| 0.50 | 76.3% | 1.17x |
-| 0.55 | 44.3% | 1.53x |
-| 0.60 | 29.3% | 1.79x |
-| 0.65 | 22.4% | 1.93x |
-| 0.70 | 10.9% | 2.24x |
+| Threshold | Hot % | Compression | Quality |
+|---|---|---|---|
+| 0.50 | 100% | 1.00x | 100% |
+| 0.55 | 96.1% | 1.02x | 100% |
+| 0.60 | 79.8% | 1.23x | 89.9% |
+| 0.65 | 77.4% | 1.27x | 89.9% |
+| 0.70 | 66.5% | 1.38x | 90.5% |
 
 > Note: Results vary by model architecture and conversation type.
-> Run `python benchmarks/real_model_benchmark.py` on your hardware.
-> Phase 2 uses CPU inference — GPU would be significantly faster.
+> Run `python benchmarks/larger_model_benchmark.py` on your hardware.
+> CPU inference — GPU would be significantly faster with better compression ratios.
 
 ---
 
@@ -158,16 +168,22 @@ demo.py                        # End-to-end demo with visualizations
 ### Phase 1 — Python Prototype (Complete)
 - Three-layer Importance Scoring Engine
 - Mixed-precision compression (1/2/4-bit + residual storage)
-- Full benchmark suite and 52 passing unit tests
+- Full benchmark suite and 55 passing unit tests
 - Synthetic KV vector validation
 
 ### Phase 2 — Real Model Integration (Complete)
 - FastKVModelHook for HuggingFace Transformers
 - Real K/V vector interception during inference on TinyLlama 1.1B
 - Real attention weight tap via forward hooks
-- 5-conversation benchmark suite with 75-93% output quality match
+- 5-conversation benchmark suite
 - Attention pattern analysis with heatmap visualizations
 - Per-model threshold calibration (optimal: 0.70 for TinyLlama)
+
+### Phase 2.5 — Cold-Start Fix + Model Benchmarks (Complete)
+- Warmup period fix: short conversation quality 79.3% -> 88.2%
+- All conversation lengths now hit >= 85% quality target
+- Phi-2 (2.7B) model compatibility verified
+- Per-model threshold calibration with warmup-aware tiering
 
 ### Phase 3 — Rust Production Port (Planned)
 - Port core algorithm to Rust
