@@ -40,6 +40,8 @@ Combined score drives dynamic promotion and demotion between tiers. A token that
 
 ### Memory Reduction
 
+![Fast-KV RAM Usage vs Baseline](docs/images/memory_comparison.png)
+
 | Conversation Length | Baseline RAM | Fast-KV RAM | Savings | Accuracy Loss |
 |---|---|---|---|---|
 | 100 tokens | 25.0 MB | 9.4 MB | 62.4% | 0.168% |
@@ -109,15 +111,17 @@ demo.py                        # End-to-end demo with visualizations
 ### Model: TinyLlama 1.1B (TinyLlama/TinyLlama-1.1B-Chat-v1.0)
 ### Hardware: Intel x86_64 CPU, 16 GB RAM
 
-**With warmup fix (warmup_steps=50):**
+**With warmup fix (warmup_steps=60):**
+
+![Output Quality by Conversation Length](docs/images/real_model_quality.png)
 
 | Conversation | Tokens | Overlap | Hot % | Compression |
 |---|---|---|---|---|
-| Short - Cybersecurity | 188 | 88.2% | 78.9% | 1.24x |
-| Medium - General Q&A | 258 | 89.9% | 77.4% | 1.27x |
-| Long - Coding Help | 339 | 86.4% | 73.7% | 1.32x |
-| Very Long - Mixed | 339 | 89.9% | 77.0% | 1.27x |
-| Extended - Reasoning | 480 | 95.1% | 73.9% | 1.32x |
+| Short - Cybersecurity | 188 | 100.0% | 100.0% | 1.00x |
+| Medium - General Q&A | 258 | 90.0% | 75.7% | 1.24x |
+| Long - Coding Help | 339 | 89.0% | 76.5% | 1.26x |
+| Very Long - Mixed | 339 | 94.7% | 79.7% | 1.20x |
+| Extended - Reasoning | 480 | 87.6% | 77.9% | 1.22x |
 
 **All conversations >= 85% quality.**
 
@@ -160,6 +164,10 @@ demo.py                        # End-to-end demo with visualizations
 | KV Eviction (H2O) | Yes | No (Permanently deleted) | Yes |
 | Sliding Window | Yes | No (Old context lost) | No |
 | **Fast-KV** | **Yes** | **Yes (Compressed, recoverable)** | **Yes (Dynamic)** |
+
+### How It Works — Tier Distribution
+
+![Token Tier Distribution](docs/images/tier_distribution.png)
 
 ---
 
@@ -216,6 +224,8 @@ Raw softmax attention weights become meaninglessly tiny as context grows (1/500 
 
 **Outlier-Aware Quantization**
 Real transformer KV vectors contain outliers — values 3+ standard deviations from the mean — that stretch the quantization scale and destroy precision for normal values. Fast-KV detects outliers before quantizing, stores them separately at full 32-bit precision, and quantizes the remaining values with a tight scale. This improves MAE by 83-85% on vectors with outliers compared to standard uniform quantization. On real TinyLlama vectors (which have milder outliers), compression improved modestly (+2% average) while maintaining 90%+ output quality.
+
+![Outlier-Aware MAE Improvement](docs/images/compression_improvement.png)
 
 ---
 

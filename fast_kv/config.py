@@ -63,7 +63,7 @@ class FastKVConfig:
     hot_tier_max_fraction: float = 0.25
 
     # Warmup period
-    warmup_steps: int = 50  # All tokens stay in Tier 1 during warmup
+    warmup_steps: int = 60  # All tokens stay in Tier 1 during warmup
 
     # Outlier-aware quantization
     use_outlier_aware: bool = True    # Master toggle for outlier detection
