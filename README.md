@@ -117,40 +117,23 @@ demo.py                        # End-to-end demo with visualizations
 
 | Conversation | Tokens | Overlap | Hot % | Compression |
 |---|---|---|---|---|
-| Short - Cybersecurity | 188 | 100.0% | 100.0% | 1.00x |
-| Medium - General Q&A | 258 | 90.0% | 75.7% | 1.24x |
-| Long - Coding Help | 339 | 89.0% | 76.5% | 1.26x |
-| Very Long - Mixed | 339 | 94.7% | 79.7% | 1.20x |
-| Extended - Reasoning | 480 | 87.6% | 77.9% | 1.22x |
+| Short - Cybersecurity | 426 | 92.9% | 76.5% | 1.25x |
+| Medium - General Q&A | 551 | 92.1% | 69.6% | 1.32x |
+| Long - Coding Help | 653 | 94.2% | 67.5% | 1.37x |
+| Very Long - Mixed | 604 | 95.9% | 68.5% | 1.35x |
+| Extended - Reasoning | 774 | 94.8% | 71.2% | 1.31x |
 
-**All conversations >= 85% quality.**
-
-**Cold-start warmup fix:**
-
-| Metric | Without Warmup | With Warmup |
-|---|---|---|
-| Short convo quality | 79.3% | 88.2% (+8.9%) |
+**All conversations >= 85% quality. Average quality: 94.0%. Average compression: 1.32x.**
 
 **Key findings:**
-- Warmup fix improved short conversation quality from **79.3% to 88.2%**
-- Average output quality: **89.9%** across all conversation lengths
-- Real KV cache compression ratio: **1.24-1.32x** (with warmup keeping more tokens hot)
+- Warmup fix (60 steps) prevents cold-start quality degradation
+- Average output quality: **94.0%** across all conversation lengths
+- Real KV cache compression: **1.25-1.37x** with outlier-aware quantization
 - ISE correctly predicted tier assignment: **77.5%** of the time
-- Optimal hot_threshold: **0.70** (gives 1.38x compression at 90.5% quality)
-- Attention analysis: **64.6%** of tokens are consistently low-attention
-
-**Threshold calibration:**
-
-| Threshold | Hot % | Compression | Quality |
-|---|---|---|---|
-| 0.50 | 100% | 1.00x | 100% |
-| 0.55 | 96.1% | 1.02x | 100% |
-| 0.60 | 79.8% | 1.23x | 89.9% |
-| 0.65 | 77.4% | 1.27x | 89.9% |
-| 0.70 | 66.5% | 1.38x | 90.5% |
+- Phi-2 (2.7B) verified compatible; full benchmarks on TinyLlama for CPU speed
 
 > Note: Results vary by model architecture and conversation type.
-> Run `python benchmarks/larger_model_benchmark.py` on your hardware.
+> Run `python benchmarks/quantized_model_benchmark.py` on your hardware.
 > CPU inference — GPU would be significantly faster with better compression ratios.
 
 ---
@@ -171,6 +154,17 @@ demo.py                        # End-to-end demo with visualizations
 
 ---
 
+## Tested Models
+
+| Model | Size | Loading | Compression | Quality | Status |
+|---|---|---|---|---|---|
+| TinyLlama 1.1B | 1.1B | float32 | 1.25-1.37x | 92-96% | Full benchmarks |
+| Phi-2 | 2.7B | float32 (low mem) | Verified | Verified | Compatible, slow on CPU |
+
+Note: 4-bit weight quantization (bitsandbytes) is supported for CUDA GPUs. On CPU, models load at float32 with `low_cpu_mem_usage=True`. Fast-KV compresses the KV cache separately at full float32 precision — the two techniques are independent and complementary.
+
+---
+
 ## Roadmap
 
 ### Phase 1 — Python Prototype (Complete)
@@ -187,11 +181,11 @@ demo.py                        # End-to-end demo with visualizations
 - Attention pattern analysis with heatmap visualizations
 - Per-model threshold calibration (optimal: 0.70 for TinyLlama)
 
-### Phase 2.5 — Cold-Start Fix + Model Benchmarks (Complete)
-- Warmup period fix: short conversation quality 79.3% -> 88.2%
-- All conversation lengths now hit >= 85% quality target
-- Phi-2 (2.7B) model compatibility verified
-- Per-model threshold calibration with warmup-aware tiering
+### Phase 2.5 — Cold-Start Fix + Multi-Model Benchmarks (Complete)
+- Warmup period fix: all conversation lengths >= 85% quality
+- Extended benchmarks with longer prompts (400-800 tokens): avg 94% quality
+- Phi-2 (2.7B) compatibility verified, QuantizedFastKVModelHook for 4-bit loading
+- Average compression 1.32x on real model KV cache
 
 ### Phase 2.7 — Outlier-Aware Quantization (Complete)
 - Outlier detection (sigma threshold) + separate full-precision storage
