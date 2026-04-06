@@ -1,0 +1,15 @@
+{
+  "version": "v0.6.0",
+  "model": "TinyLlama 1.1B",
+  "tests_passing": 66,
+  "tests_total": 66,
+  "ppl_baseline": 8.166868209838867,
+  "ppl_fastkv_default": 8.012965363548824,
+  "ppl_increase_pct": -1.88,
+  "avg_compression_ratio": 1.08,
+  "avg_quality_pct": 100.0,
+  "avg_speed_overhead_pct": -1.0,
+  "ise_overhead_pct": 0.0934,
+  "grade": "Excellent",
+  "date": "20260406_014040"
+}
