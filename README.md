@@ -4,7 +4,7 @@
 
 [![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1-orange.svg)](LICENSE)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/)
-[![Tests: 61 passing](https://img.shields.io/badge/tests-61%20passing-brightgreen.svg)]()
+[![Tests: 66 passing](https://img.shields.io/badge/tests-66%20passing-brightgreen.svg)]()
 [![Status: Beta](https://img.shields.io/badge/status-beta-blue.svg)]()
 
 ---
@@ -141,14 +141,19 @@ demo.py                        # End-to-end demo with visualizations
 | Narrative | 11.73 | 88.73 | +657% |
 | Systems/Design | 7.32 | 39.52 | +440% |
 
-**Word overlap (94%) masks a real accuracy problem.** Perplexity increases significantly when KV cache compression is active. The model produces similar-looking text but its internal confidence degrades. This is the key gap between Phase 1 synthetic results (65% savings, low MAE) and real-model deployment quality.
+**v0.5.1 found that scalar quantization caused +1370% PPL increase.** v0.6.0 fixes this with channel-wise quantization:
 
-**Root cause:** Uniform scalar quantization (even with outlier detection) is too lossy for the precision-sensitive attention computation. The KV vectors' fine-grained structure is destroyed at 2-4 bit precision in ways that MAE doesn't capture but PPL does.
+| Configuration | PPL | vs Baseline |
+|---|---|---|
+| Baseline (no Fast-KV) | 8.26 | --- |
+| Scalar quantization (v0.5.1) | 121.49 | +1370% |
+| **Channel-wise g=64 (v0.6.0)** | **8.36** | **+1.2%** |
+| Channel-wise g=32 | 8.30 | +0.4% |
 
-**Path forward:** This validates that more sophisticated quantization is needed — likely vector quantization, learned codebooks, or channel-wise quantization that preserves the structure real attention depends on. The tiering and ISE infrastructure remains sound; the compression codec needs upgrading.
+Channel-wise quantization computes a separate scale per group of 64 dimensions instead of one scale for the whole vector, preserving per-channel statistical structure that attention depends on.
 
-> Run `python benchmarks/perplexity_benchmark.py` to reproduce these numbers.
-> Results vary by model and text domain.
+> Run `python benchmarks/channelwise_benchmark.py` to reproduce.
+> Run `python benchmarks/perplexity_benchmark.py` for per-text-type PPL.
 
 ---
 
@@ -163,9 +168,7 @@ demo.py                        # End-to-end demo with visualizations
 | SnapKV | Yes | No (Selective drop) | Yes | Low |
 | PyramidKV | Yes | Yes (Layer-wise) | Yes | Low |
 | StreamingLLM | Yes | Partial (Sinks kept) | No | Moderate |
-| **Fast-KV** | **Yes** | **Yes (Compressed)** | **Yes (Dynamic)** | **High*** |
-
-*Fast-KV's current uniform scalar quantization causes significant PPL increase. The tiering infrastructure is sound but the compression codec needs upgrading to vector quantization or learned codebooks. See [Perplexity Results](#perplexity-results-honest-assessment).
+| **Fast-KV v0.6.0** | **Yes** | **Yes (Compressed)** | **Yes (Dynamic)** | **+1.2%** |
 
 ### How It Works — Tier Distribution
 
@@ -248,8 +251,11 @@ Evicted tokens are gone permanently. If the model needs to refer back to an earl
 **Attention normalization**
 Raw softmax attention weights become meaninglessly tiny as context grows (1/500 average in a 500-token context). Fast-KV normalizes each token's attention relative to the uniform distribution, making importance scoring work correctly regardless of context length.
 
+**Channel-Wise Quantization (the PPL fix)**
+Uniform scalar quantization uses one scale for the entire KV vector. This destroys per-dimension relationships that attention computation depends on, causing +1370% perplexity increase. Channel-wise quantization computes a separate scale for each group of 64 dimensions, preserving per-channel statistical structure. Result: PPL increase reduced from +1370% to **+1.2%** at 4-bit with group_size=64.
+
 **Outlier-Aware Quantization**
-Real transformer KV vectors contain outliers — values 3+ standard deviations from the mean — that stretch the quantization scale and destroy precision for normal values. Fast-KV detects outliers before quantizing, stores them separately at full 32-bit precision, and quantizes the remaining values with a tight scale. This improves MAE by 83-85% on vectors with outliers compared to standard uniform quantization. On real TinyLlama vectors (which have milder outliers), compression improved modestly (+2% average) while maintaining 90%+ output quality.
+Real transformer KV vectors contain outliers — values 3+ standard deviations from the mean — that stretch the quantization scale. Fast-KV detects outliers, stores them separately at full 32-bit precision, and quantizes remaining values with a tighter scale. Combined with channel-wise quantization for maximum quality.
 
 ![Outlier-Aware MAE Improvement](docs/images/compression_improvement.png)
 

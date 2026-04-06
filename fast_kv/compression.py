@@ -1,13 +1,16 @@
 """Quantization and dequantization engine for Fast-KV.
 
-Implements uniform scalar quantization at arbitrary bit widths (1, 2, 4, 8, 16, 32)
-with optional residual error storage for high-accuracy reconstruction.
+Implements three quantization methods:
+  1. Uniform scalar: one scale for the whole vector (fast, low quality)
+  2. Outlier-aware scalar: outliers stored separately (moderate quality)
+  3. Channel-wise: separate scale per group of dimensions (best quality)
 
-Includes outlier-aware quantization that detects and stores outlier values
-separately to prevent them from stretching the quantization scale.
+All methods support arbitrary bit widths (1, 2, 4, 8, 16, 32) and are
+dispatched transparently through the dequantize_vector() router.
 """
 
 import logging
+import math
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -203,16 +206,134 @@ def quantize_vector_outlier_aware(
     return result
 
 
-def dequantize_vector(quantized_data: Dict) -> np.ndarray:
-    """Dequantize a previously quantized vector back to float32.
+# ---------------------------------------------------------------------------
+# Channel-wise quantization
+# ---------------------------------------------------------------------------
 
-    Reverses quantize_vector by applying: value = quantized * scale + zero_point
+
+def quantize_vector_channelwise(
+    vector: np.ndarray, bits: int, group_size: Optional[int] = 64
+) -> Dict:
+    """Quantize a vector with per-group scales (channel-wise).
+
+    Instead of one scale for the entire vector, computes a separate
+    scale and zero point for each group of dimensions. This preserves
+    per-channel statistical structure that attention depends on.
 
     Args:
-        quantized_data: Dictionary returned by quantize_vector.
+        vector: Input float32 vector of shape (dim,).
+        bits: Target bit width (1, 2, 4, 8).
+        group_size: Dimensions per quantization group. None = per-dimension.
 
     Returns:
-        Reconstructed float32 vector.
+        Quantized dict with 'method'='channelwise', 'scales' array,
+        'zero_points' array, and 'group_size'.
+    """
+    dim = len(vector)
+    n_levels = (1 << bits) - 1  # 2^bits - 1
+
+    if group_size is None:
+        # Per-dimension quantization
+        n_groups = dim
+        scales = np.zeros(dim, dtype=np.float32)
+        zero_points = np.zeros(dim, dtype=np.float32)
+        quantized = np.zeros(dim, dtype=np.uint8 if bits <= 8 else np.uint16)
+
+        for d in range(dim):
+            v_min = float(vector[d])
+            v_max = float(vector[d])
+            # Add tiny range so single values don't get scale=0
+            rng = max(abs(v_max - v_min), 1e-8)
+            v_min -= rng * 0.5
+            v_max += rng * 0.5
+            scales[d] = (v_max - v_min) / n_levels
+            zero_points[d] = v_min
+            quantized[d] = int(np.clip(
+                round((vector[d] - v_min) / scales[d]), 0, n_levels
+            ))
+    else:
+        # Group-wise quantization
+        n_groups = math.ceil(dim / group_size)
+        scales = np.zeros(n_groups, dtype=np.float32)
+        zero_points = np.zeros(n_groups, dtype=np.float32)
+        quantized = np.zeros(dim, dtype=np.uint8 if bits <= 8 else np.uint16)
+
+        for g in range(n_groups):
+            start = g * group_size
+            end = min(start + group_size, dim)
+            group = vector[start:end]
+
+            v_min = float(group.min())
+            v_max = float(group.max())
+            if v_max - v_min < 1e-10:
+                scales[g] = 1.0
+            else:
+                scales[g] = (v_max - v_min) / n_levels
+            zero_points[g] = v_min
+
+            quantized[start:end] = np.clip(
+                np.round((group - v_min) / scales[g]), 0, n_levels
+            ).astype(quantized.dtype)
+
+    return {
+        "quantized": quantized,
+        "scales": scales,
+        "zero_points": zero_points,
+        "bits": int(bits),
+        "dim": dim,
+        "group_size": group_size,
+        "method": "channelwise",
+        "has_outliers": False,
+        "outliers": [],
+        "outlier_count": 0,
+    }
+
+
+def quantize_vector_channelwise_outlier_aware(
+    vector: np.ndarray,
+    bits: int,
+    group_size: int = 64,
+    threshold_sigma: float = 3.0,
+) -> Dict:
+    """Channel-wise quantization with outlier detection.
+
+    Combines outlier-aware handling with channel-wise quantization
+    for maximum reconstruction quality.
+
+    Args:
+        vector: Input float32 vector.
+        bits: Target bit width.
+        group_size: Dimensions per quantization group.
+        threshold_sigma: Sigma threshold for outlier detection.
+
+    Returns:
+        Channel-wise quantized dict with outlier information.
+    """
+    outlier_info = detect_outliers(vector, threshold_sigma)
+    outlier_indices = outlier_info["outlier_indices"]
+
+    if not outlier_indices:
+        result = quantize_vector_channelwise(vector, bits, group_size)
+        return result
+
+    # Replace outliers with group mean for cleaner quantization
+    clean_vector = vector.copy()
+    normal_mask = outlier_info["normal_mask"]
+    normal_mean = float(vector[normal_mask].mean()) if normal_mask.any() else 0.0
+    clean_vector[outlier_indices] = normal_mean
+
+    result = quantize_vector_channelwise(clean_vector, bits, group_size)
+    result["has_outliers"] = True
+    result["outliers"] = list(zip(outlier_indices, outlier_info["outlier_values"]))
+    result["outlier_count"] = len(outlier_indices)
+
+    return result
+
+
+def _dequantize_scalar(quantized_data: Dict) -> np.ndarray:
+    """Dequantize a scalar-quantized vector back to float32.
+
+    Internal implementation for uniform scalar quantization.
     """
     bits = quantized_data["bits"]
     scale = quantized_data["scale"]
@@ -224,12 +345,11 @@ def dequantize_vector(quantized_data: Dict) -> np.ndarray:
 
     n_elements = int(np.prod(shape))
 
-    if quantized_data["packed"]:
+    if quantized_data.get("packed", False):
         raw = quantized_data["quantized"]
         if bits == 1:
             unpacked = np.unpackbits(raw)[:n_elements].astype(np.float32)
         elif bits == 2:
-            # Unpack 4 values per byte
             unpacked = np.zeros(len(raw) * 4, dtype=np.uint8)
             unpacked[0::4] = (raw >> 6) & 0x03
             unpacked[1::4] = (raw >> 4) & 0x03
@@ -258,6 +378,59 @@ def dequantize_vector(quantized_data: Dict) -> np.ndarray:
         restored = flat.reshape(shape)
 
     return restored
+
+
+def _dequantize_channelwise(quantized_data: Dict) -> np.ndarray:
+    """Dequantize a channel-wise quantized vector back to float32.
+
+    Each group of dimensions has its own scale and zero point.
+    """
+    quantized = quantized_data["quantized"]
+    scales = quantized_data["scales"]
+    zero_points = quantized_data["zero_points"]
+    group_size = quantized_data["group_size"]
+    dim = quantized_data["dim"]
+
+    reconstructed = np.zeros(dim, dtype=np.float32)
+
+    if group_size is None:
+        # Per-dimension: scales and zero_points are per-element
+        reconstructed = quantized.astype(np.float32) * scales + zero_points
+    else:
+        n_groups = len(scales)
+        for g in range(n_groups):
+            start = g * group_size
+            end = min(start + group_size, dim)
+            reconstructed[start:end] = (
+                quantized[start:end].astype(np.float32) * scales[g] + zero_points[g]
+            )
+
+    # Restore outlier values if present
+    if quantized_data.get("has_outliers") and quantized_data.get("outliers"):
+        for idx, val in quantized_data["outliers"]:
+            if idx < dim:
+                reconstructed[idx] = val
+
+    return reconstructed
+
+
+def dequantize_vector(quantized_data: Dict) -> np.ndarray:
+    """Dequantize a quantized vector back to float32.
+
+    Routes to the appropriate implementation based on the 'method' field.
+    Backward compatible: old format without 'method' uses scalar path.
+
+    Args:
+        quantized_data: Dictionary returned by any quantize function.
+
+    Returns:
+        Reconstructed float32 vector.
+    """
+    method = quantized_data.get("method", "scalar")
+    if method == "channelwise":
+        return _dequantize_channelwise(quantized_data)
+    else:
+        return _dequantize_scalar(quantized_data)
 
 
 def compute_residual(
@@ -390,3 +563,43 @@ def benchmark_outlier_aware(vector: np.ndarray, bits: int = 4) -> Dict:
         "compression_ratio_standard": 32.0 / bits,
         "compression_ratio_outlier_aware": oa_cr,
     }
+
+
+def compare_quantization_methods(vector: np.ndarray, bits: int = 4) -> Dict:
+    """Compare all quantization methods on a single vector.
+
+    Args:
+        vector: Input float32 vector.
+        bits: Bit width to test.
+
+    Returns:
+        Dictionary mapping method name to {mae, cosine_sim, time}.
+    """
+    results = {}
+    methods = {
+        "scalar": lambda v, b: quantize_vector(v, b),
+        "channelwise_128": lambda v, b: quantize_vector_channelwise(v, b, 128),
+        "channelwise_64": lambda v, b: quantize_vector_channelwise(v, b, 64),
+        "channelwise_32": lambda v, b: quantize_vector_channelwise(v, b, 32),
+    }
+
+    for name, quant_fn in methods.items():
+        t0 = time.perf_counter()
+        qdata = quant_fn(vector, bits)
+        t_compress = time.perf_counter() - t0
+
+        restored = dequantize_vector(qdata)
+        error = np.abs(vector - restored)
+
+        dot = np.dot(vector, restored)
+        nv = np.linalg.norm(vector)
+        nr = np.linalg.norm(restored)
+        cosine = dot / (nv * nr) if nv > 0 and nr > 0 else 1.0
+
+        results[name] = {
+            "mae": float(error.mean()),
+            "cosine_sim": float(cosine),
+            "time": t_compress,
+        }
+
+    return results

@@ -65,6 +65,10 @@ class FastKVConfig:
     # Warmup period
     warmup_steps: int = 60  # All tokens stay in Tier 1 during warmup
 
+    # Compression method
+    compression_method: str = "channelwise"  # "scalar" or "channelwise"
+    channelwise_group_size: int = 64  # Dims per quantization group
+
     # Outlier-aware quantization
     use_outlier_aware: bool = True    # Master toggle for outlier detection
     outlier_sigma_2a: float = 3.0    # Outlier threshold for 4-bit sub-tier

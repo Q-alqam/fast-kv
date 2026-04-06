@@ -117,6 +117,10 @@ class FastKVCache:
         values = kv_matrix[:, self.kv_dim :]
         return keys, values
 
+    def get_compression_method(self) -> str:
+        """Return the current compression method name."""
+        return self.config.compression_method
+
     def get_warmup_status(self) -> Dict:
         """Return the current warmup status.
 

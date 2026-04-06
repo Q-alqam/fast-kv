@@ -14,6 +14,7 @@ from fast_kv.compression import (
     compute_residual,
     dequantize_vector,
     quantize_vector,
+    quantize_vector_channelwise_outlier_aware,
     quantize_vector_outlier_aware,
 )
 from fast_kv.config import FastKVConfig
@@ -92,13 +93,22 @@ class TierManager:
         """
         sub_tier, bits = self._assign_sub_tier(score)
 
-        # Use outlier-aware quantization if enabled
-        if self.config.use_outlier_aware:
-            sigma = {
-                "2A": self.config.outlier_sigma_2a,
-                "2B": self.config.outlier_sigma_2b,
-                "2C": self.config.outlier_sigma_2c,
-            }.get(sub_tier, 3.0)
+        # Select compression method
+        sigma = {
+            "2A": self.config.outlier_sigma_2a,
+            "2B": self.config.outlier_sigma_2b,
+            "2C": self.config.outlier_sigma_2c,
+        }.get(sub_tier, 3.0)
+
+        if self.config.compression_method == "channelwise":
+            gs = self.config.channelwise_group_size
+            # Use larger groups for the most compressed tier
+            if sub_tier == "2C":
+                gs = gs * 2 if gs else gs
+            quantized = quantize_vector_channelwise_outlier_aware(
+                kv_vector, bits, group_size=gs, threshold_sigma=sigma,
+            )
+        elif self.config.use_outlier_aware:
             quantized = quantize_vector_outlier_aware(kv_vector, bits, sigma)
         else:
             quantized = quantize_vector(kv_vector, bits)

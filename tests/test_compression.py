@@ -11,6 +11,8 @@ from fast_kv.compression import (
     detect_outliers,
     dequantize_vector,
     quantize_vector,
+    quantize_vector_channelwise,
+    quantize_vector_channelwise_outlier_aware,
     quantize_vector_outlier_aware,
 )
 
@@ -218,3 +220,78 @@ class TestOutlierDetection:
         vector = np.random.uniform(-0.1, 0.1, size=256).astype(np.float32)
         result = quantize_vector_outlier_aware(vector, 4, threshold_sigma=4.0)
         assert result["has_outliers"] is False
+
+
+class TestChannelWise:
+    """Tests for channel-wise quantization."""
+
+    def test_channelwise_better_mae_than_scalar(self):
+        """Channel-wise must have lower MAE on vectors with varied ranges."""
+        np.random.seed(42)
+        vector = np.zeros(1024, dtype=np.float32)
+        vector[:256] = np.random.randn(256) * 0.01   # tiny range
+        vector[256:512] = np.random.randn(256) * 10.0 # large range
+        vector[512:768] = np.random.randn(256) * 0.1  # medium
+        vector[768:] = np.random.randn(256) * 50.0    # very large
+
+        scalar_q = quantize_vector(vector, 4)
+        cw_q = quantize_vector_channelwise(vector, 4, group_size=64)
+
+        scalar_mae = np.abs(vector - dequantize_vector(scalar_q)).mean()
+        cw_mae = np.abs(vector - dequantize_vector(cw_q)).mean()
+
+        assert cw_mae < scalar_mae
+
+    def test_channelwise_group_size_tradeoff(self):
+        """Smaller group size should give better MAE."""
+        np.random.seed(42)
+        vector = np.random.randn(1024).astype(np.float32)
+        vector[::4] *= 20.0  # every 4th dim is large
+
+        results = {}
+        for gs in [128, 64, 32]:
+            q = quantize_vector_channelwise(vector, 4, group_size=gs)
+            r = dequantize_vector(q)
+            results[gs] = np.abs(vector - r).mean()
+
+        assert results[32] < results[64] < results[128]
+
+    def test_channelwise_backward_compatible(self):
+        """Old scalar format must still dequantize via router."""
+        np.random.seed(42)
+        vector = np.random.randn(256).astype(np.float32)
+        old_format = quantize_vector(vector, 4)
+        assert old_format.get("method", "scalar") == "scalar"
+        reconstructed = dequantize_vector(old_format)
+        assert reconstructed.shape == vector.shape
+
+    def test_channelwise_preserves_per_dim_statistics(self):
+        """8-bit per-dim channel-wise should be near-lossless."""
+        np.random.seed(42)
+        vector = np.random.randn(512).astype(np.float32)
+        vector *= np.random.exponential(5.0, 512).astype(np.float32)
+
+        q = quantize_vector_channelwise(vector, 8, group_size=1)
+        r = dequantize_vector(q)
+        mae = np.abs(vector - r).mean()
+        assert mae < 0.5  # very tight with 8-bit per-dim
+
+    def test_combined_channelwise_outlier_aware(self):
+        """Channel-wise + outlier detection: outliers perfectly reconstructed."""
+        np.random.seed(42)
+        vector = np.random.randn(1024).astype(np.float32) * 0.5
+        vector[50] = 500.0
+        vector[200] = -480.0
+
+        result = quantize_vector_channelwise_outlier_aware(
+            vector, 4, group_size=64, threshold_sigma=3.0
+        )
+        reconstructed = dequantize_vector(result)
+
+        assert abs(reconstructed[50] - 500.0) < 0.001
+        assert abs(reconstructed[200] - (-480.0)) < 0.001
+
+        normal_mask = np.ones(1024, dtype=bool)
+        normal_mask[[50, 200]] = False
+        normal_mae = np.abs(vector[normal_mask] - reconstructed[normal_mask]).mean()
+        assert normal_mae < 0.5
