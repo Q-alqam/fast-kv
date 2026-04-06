@@ -103,22 +103,53 @@ def main() -> None:
 
     bytes_per_token = model_config["kv_dim"] * 2 * 4 * model_config["n_layers"]
 
+    def realistic_kv_vector(dim: int, layer_id: int) -> np.ndarray:
+        """Simulate realistic transformer KV statistics.
+
+        Real KV vectors have heavy tails (1-2% of dims spike to 10-25x mean)
+        and later layers have larger magnitude.
+        """
+        vec = np.random.randn(dim).astype(np.float32)
+        # Outlier dimensions (~1.5% of dims spike in real models)
+        n_outliers = max(1, int(dim * 0.015))
+        outlier_idx = np.random.choice(dim, n_outliers, replace=False)
+        vec[outlier_idx] *= np.random.uniform(8.0, 25.0, n_outliers).astype(np.float32)
+        # Later layers have larger magnitude
+        layer_scale = 0.5 + (layer_id / model_config["n_layers"]) * 1.5
+        return vec * layer_scale
+
     for step in range(n_tokens):
         token_text = generate_cyber_token(step)
-        key_vec = np.random.randn(model_config["kv_dim"]).astype(np.float32)
-        val_vec = np.random.randn(model_config["kv_dim"]).astype(np.float32)
+        key_vec = realistic_kv_vector(model_config["kv_dim"], 0)
+        val_vec = realistic_kv_vector(model_config["kv_dim"], 0)
 
-        # Generate realistic attention weights — important tokens get more attention
+        # Generate realistic attention weights mimicking real transformer patterns:
+        # - Higher variance (real attention is spiky, not smooth)
+        # - Attention sinks on first 1-2 tokens (documented in StreamingLLM)
+        # - Occasional late-relevance spikes (cold token suddenly attended)
+        # - No artificial 6-sigma separation between important/unimportant
         n_existing = step + 1
-        raw_attn = np.random.randn(n_existing) * 0.5
-        # Boost attention for entity/proper noun tokens
+        raw_attn = np.random.randn(n_existing) * 1.5  # higher variance
+
+        # Attention sinks: first tokens always get disproportionate attention
+        sink_indices = [0, 1]
+        for i in sink_indices:
+            if i < n_existing:
+                raw_attn[i] += 2.0
+
+        # Mild content-based signal (NOT the 6-sigma rigged boost)
         for i in range(n_existing):
             t = generate_cyber_token(i)
             if t in CYBER_ENTITIES or t in QUESTION_TOKENS or t in FIRST_PERSON:
-                raw_attn[i] += 3.0  # Strong boost for important tokens
+                raw_attn[i] += 0.8  # Modest boost, not deterministic
             elif t in CYBER_NOUNS or t in CYBER_VERBS:
-                raw_attn[i] += 1.0  # Moderate boost for content words
-            # Stopwords get no boost (remain low)
+                raw_attn[i] += 0.3
+
+        # Random late-relevance events: ~5% chance a cold token suddenly matters
+        if np.random.random() < 0.05 and n_existing > 50:
+            random_old_token = np.random.randint(0, n_existing // 2)
+            raw_attn[random_old_token] += 2.5
+
         attn_probs = softmax(raw_attn)
         attention_weights = {
             i: float(attn_probs[i]) for i in range(n_existing)
@@ -126,8 +157,8 @@ def main() -> None:
 
         # Update all layers
         for layer_id in range(model_config["n_layers"]):
-            kv = np.random.randn(model_config["kv_dim"]).astype(np.float32)
-            vv = np.random.randn(model_config["kv_dim"]).astype(np.float32)
+            kv = realistic_kv_vector(model_config["kv_dim"], layer_id)
+            vv = realistic_kv_vector(model_config["kv_dim"], layer_id)
             cache.update(layer_id, step, token_text, kv, vv, attention_weights, step)
 
         # Track stats

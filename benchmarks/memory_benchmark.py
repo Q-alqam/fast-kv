@@ -83,17 +83,33 @@ def run_benchmark(n_tokens: int, config: FastKVConfig) -> Dict:
     # Track reconstruction errors
     original_vectors = {}
 
+    def realistic_kv_vector(dim: int, layer_id: int) -> np.ndarray:
+        """Simulate realistic transformer KV statistics with outliers."""
+        vec = np.random.randn(dim).astype(np.float32)
+        n_outliers = max(1, int(dim * 0.015))
+        outlier_idx = np.random.choice(dim, n_outliers, replace=False)
+        vec[outlier_idx] *= np.random.uniform(8.0, 25.0, n_outliers).astype(np.float32)
+        layer_scale = 0.5 + (layer_id / MODEL_CONFIG["n_layers"]) * 1.5
+        return vec * layer_scale
+
     for step in range(n_tokens):
         token_text = generate_token_text(step, n_tokens)
 
-        # Synthetic KV vectors
-        key_vec = np.random.randn(kv_dim).astype(np.float32)
-        value_vec = np.random.randn(kv_dim).astype(np.float32)
+        # Realistic KV vectors with outlier dimensions
+        key_vec = realistic_kv_vector(kv_dim, 0)
+        value_vec = realistic_kv_vector(kv_dim, 0)
         original_vectors[step] = np.concatenate([key_vec, value_vec])
 
-        # Synthetic attention weights (softmax over existing tokens)
+        # Realistic attention: high variance, attention sinks, random spikes
         n_existing = step + 1
-        raw_attn = np.random.randn(n_existing)
+        raw_attn = np.random.randn(n_existing) * 1.5
+        # Attention sinks on first tokens
+        for sink in [0, 1]:
+            if sink < n_existing:
+                raw_attn[sink] += 2.0
+        # Random late-relevance spike
+        if np.random.random() < 0.05 and n_existing > 50:
+            raw_attn[np.random.randint(0, n_existing // 2)] += 2.5
         attn_probs = softmax(raw_attn)
         attention_weights = {i: float(attn_probs[i]) for i in range(n_existing)}
 
@@ -105,8 +121,8 @@ def run_benchmark(n_tokens: int, config: FastKVConfig) -> Dict:
 
         # Update remaining layers without timing ISE
         for layer_id in range(1, MODEL_CONFIG["n_layers"]):
-            key_vec_l = np.random.randn(kv_dim).astype(np.float32)
-            value_vec_l = np.random.randn(kv_dim).astype(np.float32)
+            key_vec_l = realistic_kv_vector(kv_dim, layer_id)
+            value_vec_l = realistic_kv_vector(kv_dim, layer_id)
             cache.update(
                 layer_id, step, token_text, key_vec_l, value_vec_l,
                 attention_weights, step,

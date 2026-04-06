@@ -127,26 +127,45 @@ demo.py                        # End-to-end demo with visualizations
 
 **Key findings:**
 - Warmup fix (60 steps) prevents cold-start quality degradation
-- Average output quality: **94.0%** across all conversation lengths
+- Word overlap quality: **94.0%** average (greedy decode comparison)
 - Real KV cache compression: **1.25-1.37x** with outlier-aware quantization
 - ISE correctly predicted tier assignment: **77.5%** of the time
 - Phi-2 (2.7B) verified compatible; full benchmarks on TinyLlama for CPU speed
 
-> Note: Results vary by model architecture and conversation type.
-> Run `python benchmarks/quantized_model_benchmark.py` on your hardware.
-> CPU inference — GPU would be significantly faster with better compression ratios.
+### Perplexity Results (Honest Assessment)
+
+| Text Type | Baseline PPL | Fast-KV PPL | Increase |
+|---|---|---|---|
+| Wikipedia/Factual | 9.17 | 44.59 | +386% |
+| Technical | 8.30 | 46.19 | +457% |
+| Narrative | 11.73 | 88.73 | +657% |
+| Systems/Design | 7.32 | 39.52 | +440% |
+
+**Word overlap (94%) masks a real accuracy problem.** Perplexity increases significantly when KV cache compression is active. The model produces similar-looking text but its internal confidence degrades. This is the key gap between Phase 1 synthetic results (65% savings, low MAE) and real-model deployment quality.
+
+**Root cause:** Uniform scalar quantization (even with outlier detection) is too lossy for the precision-sensitive attention computation. The KV vectors' fine-grained structure is destroyed at 2-4 bit precision in ways that MAE doesn't capture but PPL does.
+
+**Path forward:** This validates that more sophisticated quantization is needed — likely vector quantization, learned codebooks, or channel-wise quantization that preserves the structure real attention depends on. The tiering and ISE infrastructure remains sound; the compression codec needs upgrading.
+
+> Run `python benchmarks/perplexity_benchmark.py` to reproduce these numbers.
+> Results vary by model and text domain.
 
 ---
 
 ## Comparison with Existing Approaches
 
-| Approach | Handles Edge? | Preserves Evicted Tokens? | Importance-Aware? |
-|---|---|---|---|
-| GGUF Q4/Q8 | Yes | N/A (weights only) | No |
-| TurboQuant (Google) | No (Cloud only) | Yes | No (Uniform) |
-| KV Eviction (H2O) | Yes | No (Permanently deleted) | Yes |
-| Sliding Window | Yes | No (Old context lost) | No |
-| **Fast-KV** | **Yes** | **Yes (Compressed, recoverable)** | **Yes (Dynamic)** |
+| Approach | Handles Edge? | Preserves Tokens? | Importance-Aware? | PPL Impact |
+|---|---|---|---|---|
+| GGUF Q4/Q8 | Yes | N/A (weights only) | No | N/A |
+| TurboQuant (Google) | No (Cloud) | Yes | No (Uniform) | ~0% |
+| KV Eviction (H2O) | Yes | No (Deleted) | Yes | Low-Moderate |
+| Sliding Window | Yes | No (Lost) | No | Moderate |
+| SnapKV | Yes | No (Selective drop) | Yes | Low |
+| PyramidKV | Yes | Yes (Layer-wise) | Yes | Low |
+| StreamingLLM | Yes | Partial (Sinks kept) | No | Moderate |
+| **Fast-KV** | **Yes** | **Yes (Compressed)** | **Yes (Dynamic)** | **High*** |
+
+*Fast-KV's current uniform scalar quantization causes significant PPL increase. The tiering infrastructure is sound but the compression codec needs upgrading to vector quantization or learned codebooks. See [Perplexity Results](#perplexity-results-honest-assessment).
 
 ### How It Works — Tier Distribution
 
@@ -199,6 +218,19 @@ Note: 4-bit weight quantization (bitsandbytes) is supported for CUDA GPUs. On CP
 - SIMD-accelerated quantization
 - Integration with Senvex endpoint security inference pipeline
 - PyO3 Python bindings for drop-in replacement
+
+---
+
+## Why Synthetic vs Real Numbers Differ
+
+Synthetic benchmarks show ~63% RAM savings. Real model benchmarks show 1.25-1.37x compression (20-27% savings). The gap exists because:
+
+1. **Higher hot tier rate in practice:** Synthetic assumed ~35% hot rate. Real inference shows 67-76% hot rate because the ISE uses conservative thresholds to prevent accuracy loss.
+2. **Warmup period:** The first 60 tokens stay in Tier 1 regardless of score. For short conversations, this means most tokens are never compressed.
+3. **Attention sinks:** Real transformer attention consistently attends to the first few tokens (documented by StreamingLLM). These "attention sink" tokens always score high and stay hot.
+4. **PPL sensitivity:** Perplexity benchmarks reveal that aggressive compression hurts model accuracy more than word-overlap metrics suggest. This forces conservative compression settings.
+
+To approach synthetic compression ratios, lower `hot_threshold` (accept higher PPL) or develop more sophisticated quantization methods that preserve the fine-grained structure attention depends on.
 
 ---
 
